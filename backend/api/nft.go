@@ -1,55 +1,79 @@
 package api
 
 import (
-    "bytes"
-    "encoding/json"
-    "io"
-    "net/http"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
 
-    "gofr.dev/pkg/gofr"
+	"gofr.dev/pkg/gofr"
 )
 
 func MintNFT(ctx *gofr.Context) (interface{}, error) {
-    url := "https://api.verbwire.com/v1/nft/mint/quickMint"
-    apiKey := "<YOUR_VERBWIRE_API_KEY>"
+	url := "https://api.verbwire.com/v1/nft/mint/quickMintFromMetadataUrl"
+	apiKey := "sk_live_aa613753-3653-4d8c-b2ff-3c33492f9ca8"
 
-    payload := map[string]string{
-        "chain":            "goerli",
-        "name":             "HackOdisha NFT",
-        "description":      "Demo NFT minted from Verbwire + GoFr",
-        "recipientAddress": "<YOUR_WALLET_ADDRESS>",
-        "imageUrl":         "https://verbwire.io/sample-nft.png",
-    }
+	// read request body: { "metadataUrl": "https://..." }
+	var reqData struct {
+		MetadataUrl string `json:"metadataUrl"`
+		Recipient   string `json:"recipient"` // optional, fallback
+		Chain       string `json:"chain"`
+	}
+	if err := ctx.Bind(&reqData); err != nil {
+		return nil, err
+	}
+	if reqData.MetadataUrl == "" {
+		return nil, fmt.Errorf("metadataUrl required")
+	}
+	if reqData.Chain == "" {
+		reqData.Chain = "sepolia"
+	}
+	if reqData.Recipient == "" {
+		reqData.Recipient = "0x33145a6258e89b6E0796d237A3048A3852cCaeQ7" // your default
+	}
 
-    // Marshal payload
-    body, err := json.Marshal(payload)
-    if err != nil {
-        return nil, err // ✅ Check error
-    }
+	payload := fmt.Sprintf(
+		"allowPlatformToOperateToken=true&chain=%s&recipientAddress=%s&metadataUrl=%s",
+		reqData.Chain,
+		reqData.Recipient,
+		reqData.MetadataUrl,
+	)
 
-    // Create request
-    req, err := http.NewRequest("POST", url, bytes.NewBuffer(body))
-    if err != nil {
-        return nil, err // ✅ Check error
-    }
+	req, err := http.NewRequest("POST", url, strings.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add("accept", "application/json")
+	req.Header.Add("content-type", "application/x-www-form-urlencoded")
+	req.Header.Add("X-API-Key", apiKey)
 
-    // Set headers
-    req.Header.Set("Content-Type", "application/json")
-    req.Header.Set("X-API-Key", apiKey)
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
 
-    // Execute request
-    resp, err := http.DefaultClient.Do(req)   
-    if err != nil {
-        return nil, err // ✅ Check error before using resp
-    }
-    defer resp.Body.Close() // ✅ Safe to use now
+	fmt.Printf("✅ Verbwire Response Status: %d\n", resp.StatusCode)
+	fmt.Printf("🔹 Raw Verbwire Response: %s\n", string(body))
 
-    // Read response body
-    responseBody, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return nil, err // ✅ Check error
-    }
-
-    // Return response as string
-    return string(responseBody), nil
-}   
+	var parsed struct {
+		QuickMint struct {
+			TransactionID string `json:"transactionID"`
+			Status        string `json:"status"`
+			BlockExplorer string `json:"blockExplorer"`
+		} `json:"quick_mint"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"success":       true,
+		"status":        parsed.QuickMint.Status,
+		"transactionID": parsed.QuickMint.TransactionID,
+		"blockExplorer": parsed.QuickMint.BlockExplorer,
+		"raw":           string(body),
+	}, nil
+}
